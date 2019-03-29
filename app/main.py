@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request
 from logging import getLogger
+from flask_cors import CORS
 
 import boilerplate
 
@@ -10,38 +11,44 @@ from hseling_api_universal_dependencies.query import query_data
 ALLOWED_EXTENSIONS = ['txt']
 
 
+MODELS_DIR = '/dependencies/hseling_api_universal_dependencies/models/'
+MODEL_NAMES = {
+    'russian': 'russian-ud-2.0-170801.udpipe'
+}
+
 log = getLogger(__name__)
 
 
 app = Flask(__name__)
+CORS(app)
 app.config.update(
     CELERY_BROKER_URL=boilerplate.CELERY_BROKER_URL,
     CELERY_RESULT_BACKEND=boilerplate.CELERY_RESULT_BACKEND
 )
 celery = boilerplate.make_celery(app)
 
+@celery.task
+def process_task_stream(sentence):
+    from ufal.udpipe import Model, Pipeline
+    model_path = MODELS_DIR + MODEL_NAMES['russian'] # language harcoded so far
+    model = Model.load(model_path)
+    pipeline = Pipeline(model, '', '', '', '')
+    print('...loaded the model')
+    return process_data(sentence, pipeline)
+
 
 @celery.task
 def process_task(file_ids_list=None):
-    files_to_process = boilerplate.list_files(recursive=True,
-                                              prefix=boilerplate.UPLOAD_PREFIX)
-    if file_ids_list:
-        files_to_process = [boilerplate.UPLOAD_PREFIX + file_id
-                            for file_id in file_ids_list
-                            if (boilerplate.UPLOAD_PREFIX + file_id)
-                            in files_to_process]
-    data_to_process = {file_id[len(boilerplate.UPLOAD_PREFIX):]:
-                       boilerplate.get_file(file_id)
-                       for file_id in files_to_process}
-    processed_file_ids = list()
-    for processed_file_id, contents in process_data(data_to_process):
-        processed_file_ids.append(
-            boilerplate.add_processed_file(
-                processed_file_id,
-                contents,
-                extension='txt'
-            ))
-    return processed_file_ids
+    from ufal.udpipe import Model, Pipeline
+    model_path = MODELS_DIR + MODEL_NAMES['russian'] # language harcoded so far 
+    model = Model.load(model_path)
+    pipeline = Pipeline(model, '', '', '', '')
+    file_to_process = boilerplate.get_file(file_ids_list[0]) # getting the content of the file
+    print('...loaded the model')
+    # parsed = pipeline.process(file_to_process.decode('utf-8'))
+    # print('...parsed the sentence')
+    # print(parsed)
+    return process_data(file_to_process, pipeline)
 
 
 @app.route('/upload', methods=['GET', 'POST'])
@@ -77,6 +84,16 @@ def process_endpoint(file_ids=None):
     file_ids_list = file_ids and file_ids.split(",")
     task = process_task.delay(file_ids_list)
     return jsonify({"task_id": str(task)})
+
+
+@app.route('/process_stream', methods=['GET', 'POST'])
+def process_stream_endpoint():
+    if request.method == 'POST':
+        data = request.json
+        print(data['sentence'])
+        task = process_task_stream.delay(data['sentence'])
+        return jsonify({"task_id": str(task)})
+    return jsonify({'error': 'invalid method'})
 
 
 @app.route("/query/<path:file_id>")
